@@ -1,17 +1,24 @@
 """Worker: polls for pending jobs, runs the review, posts comments, updates status.
 
-Step 4 of the build plan. Start with simple DB polling; swap in Redis/SQS later
-if you want a push-based queue instead of poll-based.
+Start with simple DB polling; swap in Redis/SQS later if you want a push-based
+queue instead of poll-based.
 """
+import logging
 import time
 
 from app.worker.review import process_pending_job
 
 POLL_INTERVAL_SECONDS = 5
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("worker.main")
+
 
 def run_forever():
-    print("Worker started, polling for jobs...")
+    logger.info("Worker started, polling for jobs every %ds...", POLL_INTERVAL_SECONDS)
     while True:
         processed = process_pending_job()
         if not processed:
