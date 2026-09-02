@@ -15,6 +15,7 @@ from app.llm.prompts import REVIEW_SYSTEM_PROMPT, build_review_prompt
 MAX_DIFF_CHARS = 20_000  # keep prompts bounded; a huge diff gets truncated rather than rejected
 
 
+
 @dataclass
 class Finding:
     file: str
