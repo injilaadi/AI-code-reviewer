@@ -6,12 +6,19 @@ GitHub review APIs itself. That happens in the worker (app/worker/review.py),
 decoupled via the database so the receiver stays fast and GitHub's webhook
 timeout is never a concern.
 """
+import logging
 import os
 from fastapi import FastAPI, Request, HTTPException
 
 from app.receiver.webhook_verify import verify_signature
 from app.db.session import SessionLocal, init_db
 from app.db.models import Repo, PullRequest, ReviewRun
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("receiver.main")
 
 app = FastAPI(title="AI Code Reviewer - Webhook Receiver")
 
@@ -21,6 +28,7 @@ WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
 @app.on_event("startup")
 def on_startup():
     init_db()
+    logger.info("Receiver started, tables ensured")
 
 
 @app.get("/healthz")
@@ -34,12 +42,15 @@ async def handle_webhook(request: Request):
     signature = request.headers.get("X-Hub-Signature-256", "")
 
     if not verify_signature(body, signature, WEBHOOK_SECRET):
+        logger.warning("Rejected webhook: invalid signature")
         raise HTTPException(status_code=401, detail="invalid signature")
 
     event = request.headers.get("X-GitHub-Event", "")
     payload = await request.json()
+    action = payload.get("action")
+    logger.info("Received %s event (action=%s)", event, action)
 
-    if event == "pull_request" and payload.get("action") in ("opened", "synchronize"):
+    if event == "pull_request" and action in ("opened", "synchronize"):
         pr = payload["pull_request"]
         repo_full_name = payload["repository"]["full_name"]
 
@@ -68,7 +79,8 @@ async def handle_webhook(request: Request):
             review_run = ReviewRun(pull_request_id=pull_request.id, status="pending")
             db.add(review_run)
             db.commit()
-            print(f"Queued review_run {review_run.id} for PR #{pr['number']} in {repo_full_name}")
+            logger.info("Queued review_run %s for PR #%s in %s",
+                        review_run.id, pr["number"], repo_full_name)
         finally:
             db.close()
 

@@ -15,6 +15,7 @@ from app.llm.prompts import REVIEW_SYSTEM_PROMPT, build_review_prompt
 MAX_DIFF_CHARS = 20_000  # keep prompts bounded; a huge diff gets truncated rather than rejected
 
 
+
 @dataclass
 class Finding:
     file: str
@@ -70,7 +71,7 @@ def _call_gemini(diff: str) -> tuple[str, int | None, int | None]:
 
     genai.configure(api_key=os.environ["LLM_API_KEY"])
     model = genai.GenerativeModel(
-        os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
+        os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite"),
         system_instruction=REVIEW_SYSTEM_PROMPT,
     )
     resp = model.generate_content(build_review_prompt(diff))

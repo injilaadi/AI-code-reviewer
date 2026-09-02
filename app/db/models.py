@@ -1,9 +1,15 @@
 """SQLAlchemy models: repos, pull_requests, review_runs, findings.
 
 review_runs.status doubles as the job queue state: 'pending' -> worker picks it up ->
-'running' -> 'done' | 'failed'.
+'running' -> 'done' | 'partial' | 'failed'.
+  - 'done'    : LLM review succeeded and every finding was posted to GitHub.
+  - 'partial' : LLM review succeeded but one or more findings failed to post
+                (see error for details) -- distinct from 'done' so a silently
+                incomplete review is visible instead of looking identical to a
+                fully successful one.
+  - 'failed'  : the review itself failed (LLM call, diff fetch, etc).
 """
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, func
+from sqlalchemy import Column, Integer, String, Text, Boolean, ForeignKey, DateTime, func
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -31,7 +37,7 @@ class ReviewRun(Base):
     __tablename__ = "review_runs"
     id = Column(Integer, primary_key=True)
     pull_request_id = Column(Integer, ForeignKey("pull_requests.id"), nullable=False)
-    status = Column(String, default="pending", nullable=False)  # pending|running|done|failed
+    status = Column(String, default="pending", nullable=False)  # pending|running|done|partial|failed
     error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
@@ -50,5 +56,7 @@ class Finding(Base):
     line = Column(Integer, nullable=False)
     severity = Column(String, nullable=False)
     comment = Column(Text, nullable=False)
+    posted = Column(Boolean, default=False, nullable=False)  # did it actually reach GitHub?
+    post_error = Column(Text, nullable=True)  # why not, if posted=False
 
     review_run = relationship("ReviewRun", back_populates="findings")
