@@ -16,5 +16,89 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pytest
 
-  # TODO (Step 7): add a build-and-push job (docker/build-push-action -> GHCR/ECR)
-  # and a deploy job (kubectl apply / helm upgrade) gated on the test job passing.
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    # Every push/PR builds the image (catches a broken Dockerfile early);
+    # only a push to main actually publishes to GHCR, so the registry only
+    # ever holds images that already passed review and merged.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t ai-code-reviewer:ci .
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push
+        if: github.event_name == 'push'
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          IMAGE="${IMAGE,,}"  # ghcr.io requires lowercase
+          docker tag ai-code-reviewer:ci "$IMAGE:${{ github.sha }}"
+          docker tag ai-code-reviewer:ci "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+  deploy-check:
+    # Validates the Kubernetes manifests actually bring up a healthy cluster
+    # on every push, using a throwaway kind cluster inside the runner --
+    # there's no way for GitHub's cloud runners to reach a real local/private
+    # cluster, so this is the honest equivalent: prove the manifests work.
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t ai-code-reviewer:local .
+
+      - name: Create ephemeral kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ci-check
+
+      - name: Load image into kind
+        run: kind load docker-image ai-code-reviewer:local --name ci-check
+
+      - name: Apply manifests with dummy secrets
+        run: |
+          kubectl create namespace ai-code-reviewer
+          kubectl create secret generic ai-code-reviewer-secrets \
+            --namespace ai-code-reviewer \
+            --from-literal=GITHUB_TOKEN=ci-dummy \
+            --from-literal=GITHUB_WEBHOOK_SECRET=ci-dummy \
+            --from-literal=LLM_API_KEY=ci-dummy
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/postgres.yaml
+          kubectl apply -f k8s/receiver.yaml
+          kubectl apply -f k8s/worker.yaml
+
+      - name: Wait for pods to be ready
+        run: |
+          kubectl wait --for=condition=available --timeout=120s \
+            deployment/postgres deployment/receiver deployment/worker \
+            -n ai-code-reviewer
+
+      - name: Smoke test /healthz through the cluster
+        run: |
+          kubectl port-forward -n ai-code-reviewer svc/receiver 8000:8000 &
+          sleep 3
+          curl --fail http://localhost:8000/healthz
+
+      - name: Dump pod status/logs on failure
+        if: failure()
+        run: |
+          kubectl get pods -n ai-code-reviewer
+          kubectl describe pods -n ai-code-reviewer
+          kubectl logs -n ai-code-reviewer -l app=receiver --tail=100 || true
+          kubectl logs -n ai-code-reviewer -l app=worker --tail=100 || true
