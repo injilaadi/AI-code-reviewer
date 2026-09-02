@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: ai-code-reviewer
+spec:
+  replicas: 2  # independent scaling from the receiver -- more workers to churn through review jobs
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16
+          command:
+            - sh
+            - -c
+            - until pg_isready -h postgres -p 5432 -U postgres; do echo waiting for postgres; sleep 2; done
+      containers:
+        - name: worker
+          image: ai-code-reviewer:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.worker.main"]
+          envFrom:
+            - configMapRef:
+                name: ai-code-reviewer-config
+            - secretRef:
+                name: ai-code-reviewer-secrets
